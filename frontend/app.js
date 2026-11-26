@@ -4,14 +4,7 @@ const APP_CONFIG = {
   USE_REMOTE_API: true,
   API_BASE_URL: "/.netlify/functions/api",
   DEFAULT_RATE_PER_KM: 14.5,
-  GAS_COST_POLICY: "optional",
-  ROUTES: [
-    { pickup: "Johannesburg Central Depot", dropoff: "Durban Harbour Terminal", km: 570, revenue: 18500 },
-    { pickup: "Pretoria Rosslyn Hub", dropoff: "Polokwane Distribution", km: 265, revenue: 9400 },
-    { pickup: "Mokopane Logistics Yard", dropoff: "Johannesburg City Deep", km: 295, revenue: 10800 },
-    { pickup: "Cape Town Bellville Depot", dropoff: "Gqeberha Port Yard", km: 750, revenue: 23500 },
-    { pickup: "Bloemfontein Freight Park", dropoff: "Johannesburg Central Depot", km: 400, revenue: 13200 }
-  ]
+  GAS_COST_POLICY: "optional"
 };
 
 let state = {
@@ -62,7 +55,7 @@ async function syncRemote(endpoint, method = "GET", payload = null) {
     }
     return data;
   } catch (err) {
-    alert("Cannot reach backend API. Make sure netlify dev is running locally or cloud DB env vars are set on Netlify.");
+    alert("Cannot reach backend API. Check local netlify dev or Netlify environment variables.");
     return null;
   }
 }
@@ -132,19 +125,29 @@ function renderDriverPortal() {
   document.getElementById("driver-selected-meta").textContent = [truck.brand, truck.model, truck.year].filter(Boolean).join(" • ");
   document.getElementById("driver-trip-status").textContent = truck.status || "AT DEPOT";
 
+  // Strict State Machine: Cannot return without finishing load; cannot start new load without returning
   const btnStart = document.getElementById("btn-start-load");
   const btnDone = document.getElementById("btn-load-done");
   const btnReturn = document.getElementById("btn-return-trip");
   const status = (truck.status || "AT DEPOT").toUpperCase();
 
   if (status === "AT DEPOT") {
-    btnStart.classList.remove("hidden"); btnDone.classList.remove("hidden"); btnReturn.classList.add("hidden");
-    btnStart.disabled = false; btnDone.disabled = true;
+    btnStart.classList.remove("hidden");
+    btnDone.classList.remove("hidden");
+    btnReturn.classList.add("hidden");
+    btnStart.disabled = false;
+    btnDone.disabled = true;
   } else if (status === "IN TRANSIT") {
-    btnStart.classList.remove("hidden"); btnDone.classList.remove("hidden"); btnReturn.classList.add("hidden");
-    btnStart.disabled = true; btnDone.disabled = false;
+    btnStart.classList.remove("hidden");
+    btnDone.classList.remove("hidden");
+    btnReturn.classList.add("hidden");
+    btnStart.disabled = true;
+    btnDone.disabled = false;
   } else {
-    btnStart.classList.add("hidden"); btnDone.classList.add("hidden"); btnReturn.classList.remove("hidden");
+    // DELIVERED -> Only Return Trip button is available
+    btnStart.classList.add("hidden");
+    btnDone.classList.add("hidden");
+    btnReturn.classList.remove("hidden");
     btnReturn.disabled = false;
   }
 }
@@ -365,14 +368,15 @@ function bindEvents() {
   };
   document.getElementById("driver-reset-plate-btn").onclick = () => { state.selectedPlate = null; renderDriverPortal(); };
 
+  // 1. MANUAL START LOAD
   document.getElementById("btn-start-load").onclick = () => {
+    const truck = state.trucks.find(t => t.plate === state.selectedPlate);
+    if (!truck || (truck.status && truck.status !== "AT DEPOT")) return;
     const driverSelect = document.getElementById("start-driver-select");
-    driverSelect.required = false;
     driverSelect.innerHTML = state.drivers.length
       ? state.drivers.map(d => `<option value="${d.id}">${d.name}</option>`).join("")
-      : `<option value="">Default / Unassigned Driver</option>`;
-    document.getElementById("start-pickup-select").innerHTML = APP_CONFIG.ROUTES.map((r, i) => `<option value="${i}">${r.pickup}</option>`).join("");
-    document.getElementById("start-dropoff-select").innerHTML = APP_CONFIG.ROUTES.map((r, i) => `<option value="${i}">${r.dropoff}</option>`).join("");
+      : `<option value="">Unassigned Driver</option>`;
+    document.getElementById("form-start-load").reset();
     openModal("modal-start-load");
   };
 
@@ -380,21 +384,32 @@ function bindEvents() {
     e.preventDefault();
     const truck = state.trucks.find(t => t.plate === state.selectedPlate);
     if (!truck) return;
-    const route = APP_CONFIG.ROUTES[Number(document.getElementById("start-dropoff-select").value)];
-    const pickupRoute = APP_CONFIG.ROUTES[Number(document.getElementById("start-pickup-select").value)];
     const tripId = "tr_" + Date.now();
     const newTrip = {
-      id: tripId, date: new Date().toISOString().slice(0, 10), plate: truck.plate,
-      driverId: document.getElementById("start-driver-select").value || "", customer: "",
-      pickup: pickupRoute.pickup, dropoff: route.dropoff, km: route.km, revenue: route.revenue,
-      fuelCost: 0, extraCost: 0, status: "IN TRANSIT"
+      id: tripId,
+      date: new Date().toISOString().slice(0, 10),
+      plate: truck.plate,
+      driverId: document.getElementById("start-driver-select").value || "",
+      customer: document.getElementById("start-customer-input").value.trim(),
+      pickup: document.getElementById("start-pickup-input").value.trim(),
+      dropoff: document.getElementById("start-dropoff-input").value.trim(),
+      km: Number(document.getElementById("start-km-input").value || 0),
+      revenue: Number(document.getElementById("start-rev-input").value || 0),
+      fuelCost: 0,
+      extraCost: 0,
+      status: "IN TRANSIT"
     };
     const res = await syncRemote("/trips", "POST", newTrip);
-    if (res) { state.trips.unshift(newTrip); truck.status = "IN TRANSIT"; truck.activeTripId = tripId; }
+    if (res) {
+      state.trips.unshift(newTrip);
+      truck.status = "IN TRANSIT";
+      truck.activeTripId = tripId;
+    }
     closeAllModals();
     renderDriverPortal();
   };
 
+  // 2. LOAD IS DONE
   document.getElementById("btn-load-done").onclick = () => {
     const fuelWrap = document.getElementById("fuel-input-wrapper");
     const fuelInput = document.getElementById("done-fuel-input");
@@ -411,10 +426,11 @@ function bindEvents() {
     const fuelVal = Number(document.getElementById("done-fuel-input").value || 0);
     const trip = state.trips.find(tr => tr.id === truck.activeTripId) || state.trips.find(tr => tr.plate === truck.plate && tr.status === "IN TRANSIT");
     if (trip) {
-      trip.fuelCost = fuelVal; trip.status = "DELIVERED";
+      trip.fuelCost = fuelVal;
+      trip.status = "DELIVERED";
       await syncRemote(`/trips/${trip.id}`, "PUT", trip);
     } else {
-      await syncRemote(`/trucks/${encodeURIComponent(truck.plate)}/status`, "PUT", { status: "DELIVERED", activeTripId: null });
+      await syncRemote(`/trucks/${encodeURIComponent(truck.plate)}/status`, "PUT", { status: "DELIVERED", activeTripId: truck.activeTripId || null });
     }
     truck.status = "DELIVERED";
     state.alerts.unshift(`DELIVERY CONFIRMED: ${truck.plate} arrived at ${trip?.dropoff || "destination"}.`);
@@ -422,20 +438,56 @@ function bindEvents() {
     renderDriverPortal();
   };
 
-  document.getElementById("btn-return-trip").onclick = async () => {
+  // 3. MANUAL RETURN TRIP (ONLY AVAILABLE AFTER LOAD IS DONE)
+  document.getElementById("btn-return-trip").onclick = () => {
+    const truck = state.trucks.find(t => t.plate === state.selectedPlate);
+    if (!truck || truck.status !== "DELIVERED") return;
+    const activeTrip = state.trips.find(tr => tr.id === truck.activeTripId) || state.trips.find(tr => tr.plate === truck.plate && tr.status === "DELIVERED");
+    document.getElementById("form-return-trip").reset();
+    document.getElementById("return-pickup-input").value = activeTrip ? activeTrip.dropoff : "";
+    document.getElementById("return-dropoff-input").value = activeTrip ? activeTrip.pickup : "";
+    document.getElementById("return-fuel-wrapper").classList.toggle("hidden", state.fuelPolicy === "disabled");
+    openModal("modal-return-trip");
+  };
+
+  document.getElementById("form-return-trip").onsubmit = async e => {
+    e.preventDefault();
     const truck = state.trucks.find(t => t.plate === state.selectedPlate);
     if (!truck) return;
-    const trip = state.trips.find(tr => tr.id === truck.activeTripId) || state.trips.find(tr => tr.plate === truck.plate && tr.status === "DELIVERED");
-    if (trip) {
-      trip.status = "COMPLETED";
-      await syncRemote(`/trips/${trip.id}`, "PUT", trip);
-    } else {
-      await syncRemote(`/trucks/${encodeURIComponent(truck.plate)}/status`, "PUT", { status: "AT DEPOT", activeTripId: null });
+
+    const outboundTrip = state.trips.find(tr => tr.id === truck.activeTripId) || state.trips.find(tr => tr.plate === truck.plate && tr.status === "DELIVERED");
+    if (outboundTrip) {
+      outboundTrip.status = "COMPLETED";
+      await syncRemote(`/trips/${outboundTrip.id}`, "PUT", outboundTrip);
     }
-    truck.status = "AT DEPOT"; truck.activeTripId = null;
+
+    const returnTrip = {
+      id: "ret_" + Date.now(),
+      date: new Date().toISOString().slice(0, 10),
+      plate: truck.plate,
+      driverId: outboundTrip ? outboundTrip.driverId : "",
+      customer: outboundTrip?.customer ? `${outboundTrip.customer} (Return)` : "Return Leg",
+      pickup: document.getElementById("return-pickup-input").value.trim(),
+      dropoff: document.getElementById("return-dropoff-input").value.trim(),
+      km: Number(document.getElementById("return-km-input").value || 0),
+      revenue: Number(document.getElementById("return-rev-input").value || 0),
+      fuelCost: Number(document.getElementById("return-fuel-input").value || 0),
+      extraCost: 0,
+      status: "COMPLETED"
+    };
+
+    const res = await syncRemote("/trips", "POST", returnTrip);
+    if (res) {
+      await syncRemote(`/trips/${returnTrip.id}`, "PUT", returnTrip);
+      state.trips.unshift(returnTrip);
+    }
+    truck.status = "AT DEPOT";
+    truck.activeTripId = null;
+    closeAllModals();
     renderDriverPortal();
   };
 
+  // OWNER MODALS
   document.getElementById("open-add-truck-btn").onclick = () => openModal("modal-add-truck");
   document.getElementById("form-add-truck").onsubmit = async e => {
     e.preventDefault();
