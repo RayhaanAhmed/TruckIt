@@ -1,0 +1,8 @@
+body{
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+}
+
+button[name = LearnMore] {
+    background-color: rgb(233, 208, 183);
+}
