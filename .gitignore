@@ -1,0 +1,7 @@
+# Local Netlify folder
+cat << 'EOF' > .gitignore
+node_modules/
+.netlify/
+.env
+.DS_Store
+EOF
