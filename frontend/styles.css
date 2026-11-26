@@ -595,3 +595,8 @@ body {
         stroke: #0f172a !important;
     }
 }
+.blueprint-canvas svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
